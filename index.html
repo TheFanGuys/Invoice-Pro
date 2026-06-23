@@ -118,11 +118,11 @@ button{cursor:pointer}
 .img-viewer-body img{max-width:100%;max-height:100%;object-fit:contain;border-radius:8px}
 /* Crop modal */
 .crop-overlay{position:fixed;inset:0;background:#000;z-index:500;display:flex;flex-direction:column}
-.crop-header{display:flex;align-items:center;justify-content:space-between;padding:0 16px;height:52px;background:#111;flex-shrink:0}
+.crop-header{display:flex;align-items:flex-end;justify-content:space-between;padding:0 16px 8px;padding-top:env(safe-area-inset-top,14px);min-height:calc(52px + env(safe-area-inset-top,0px));background:#111;flex-shrink:0}
 .crop-header button{background:none;border:none;color:#00AEEF;font-size:17px;padding:8px 4px;cursor:pointer}
 .crop-header span{font-size:17px;font-weight:600;color:#fff}
 .crop-canvas-wrap{flex:1;position:relative;overflow:hidden;display:flex;align-items:center;justify-content:center;background:#000}
-.crop-hint{position:absolute;bottom:16px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,.7);color:rgba(255,255,255,.6);font-size:12px;padding:6px 14px;border-radius:20px;white-space:nowrap}
+.crop-hint{position:absolute;bottom:calc(16px + env(safe-area-inset-bottom,0px));left:50%;transform:translateX(-50%);background:rgba(0,0,0,.7);color:rgba(255,255,255,.6);font-size:12px;padding:6px 14px;border-radius:20px;white-space:nowrap}
 .crop-handle{position:absolute;width:22px;height:22px;border-radius:4px;background:#00AEEF;opacity:.9}
 .photo-overlay{position:absolute;inset:0;background:rgba(0,0,0,.68);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px}
 .spinner{width:26px;height:26px;border-radius:50%;border:2.5px solid #00AEEF;border-top-color:transparent;animation:spin .75s linear infinite}
@@ -340,7 +340,7 @@ var VENDOR_MAP = [
   {words:['hyatt'],                 vendor:'Hyatt',          cat:'Lodging / Hotel'},
   {words:['courtyard'],             vendor:'Courtyard',      cat:'Lodging / Hotel'},
   {words:['residence inn'],         vendor:'Residence Inn',  cat:'Lodging / Hotel'},
-  {words:['home2 suites','home 2 suites'], vendor:'Home2 Suites', cat:'Lodging / Hotel'},
+  {words:['home2 suites','home 2 suites','home2mkt','home2'], vendor:'Home2 Suites by Hilton', cat:'Lodging / Hotel'},
   {words:['homewood suites'],       vendor:'Homewood Suites',cat:'Lodging / Hotel'},
   {words:['staybridge'],            vendor:'Staybridge Suites', cat:'Lodging / Hotel'},
   {words:['candlewood'],            vendor:'Candlewood Suites', cat:'Lodging / Hotel'},
@@ -379,65 +379,64 @@ function matchVendor(text) {
 }
 
 function parseReceiptText(lines) {
-  // lines = array of strings from OCR, top to bottom
   var result = { vendor:'', amount:0, date:'', category:'' };
   var allText = lines.join(' ');
 
-  // ── VENDOR: try keyword match first, then use top 3 lines
+  // ── VENDOR
   var km = matchVendor(allText);
   if (km) {
-    result.vendor   = km.vendor;
+    result.vendor = km.vendor;
     result.category = km.cat;
   } else {
-    // Use first non-empty line that isn't just numbers/symbols
-    for (var i=0; i<Math.min(lines.length,5); i++) {
-      var l = lines[i].trim();
-      if (l.length > 2 && /[a-zA-Z]{2}/.test(l)) {
-        result.vendor = l.replace(/[^a-zA-Z0-9\s'&.-]/g,'').trim();
+    for (var vi=0; vi<Math.min(lines.length,8); vi++) {
+      var vl = lines[vi].trim();
+      if (vl.length > 2 && /[a-zA-Z]{2}/.test(vl) && !/^(name|address|date|room|page|ref)/i.test(vl)) {
+        result.vendor = vl.replace(/[^a-zA-Z0-9 '&.-]/g,'').trim().slice(0,40);
         break;
       }
     }
   }
 
-  // ── AMOUNT: scan every line for dollar amounts, pick the one labeled TOTAL
-  var totalAmount = 0;
-  var largestAmount = 0;
-  var totalKeywords = /(total|grand total|amount due|balance due|sale|subtotal|charged|credit|you paid|payment|net total)/i;
-  var skipKeywords  = /(subtotal|sub total|tax|tip|discount|savings|points|change|cash|check)/i;
-
-  for (var i=lines.length-1; i>=0; i--) {
-    var line = lines[i];
-    // Find dollar amounts on this line
-    var amounts = line.match(/\$?\d{1,4}\.\d{2}/g);
-    if (!amounts) continue;
-    var amt = parseFloat(amounts[amounts.length-1].replace('$',''));
-    if (isNaN(amt) || amt <= 0) continue;
-    if (amt > largestAmount) largestAmount = amt;
-    // Is this a "total" line?
-    if (totalKeywords.test(line) && !skipKeywords.test(line)) {
-      if (amt > totalAmount) totalAmount = amt;
+  // ── AMOUNT: handles regular receipts AND hotel folios (payment shown in parentheses)
+  var totalAmount = 0, largestPos = 0, largestCredit = 0;
+  for (var ai=0; ai<lines.length; ai++) {
+    var al = lines[ai];
+    // Positive dollar amounts
+    var posM = al.match(/[^(]\$?(\d{1,5}\.\d{2})/g);
+    if (posM) {
+      posM.forEach(function(a) {
+        var v = parseFloat(a.replace(/[$,]/g,''));
+        if (!isNaN(v) && v > 1) {
+          if (v > largestPos) largestPos = v;
+          if (/(rate|charged|total charge|total amount|total due|total paid|folio total)/i.test(al) && v > totalAmount) {
+            totalAmount = v;
+          }
+        }
+      });
+    }
+    // Credit amounts in parens: ($872.57) — hotel payment to card
+    var credM = al.match(/\(\$?([\d,]+\.\d{2})\)/g);
+    if (credM) {
+      credM.forEach(function(a) {
+        var v = parseFloat(a.replace(/[()$,]/g,''));
+        if (!isNaN(v) && v > largestCredit) largestCredit = v;
+      });
     }
   }
-  result.amount = totalAmount > 0 ? totalAmount : largestAmount;
+  result.amount = totalAmount > 0 ? totalAmount : (largestCredit > largestPos ? largestCredit : largestPos);
 
-  // ── DATE: find MM/DD/YYYY, MM-DD-YYYY, YYYY-MM-DD, or Month DD YYYY
-  var datePatterns = [
-    /(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/,   // MM/DD/YYYY
-    /(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/,   // YYYY-MM-DD
-    /(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+(\d{1,2}),?\s+(\d{4})/i,
-  ];
-  var months = {jan:'01',feb:'02',mar:'03',apr:'04',may:'05',jun:'06',
-                jul:'07',aug:'08',sep:'09',oct:'10',nov:'11',dec:'12'};
-
-  for (var i=0; i<lines.length; i++) {
-    var line = lines[i];
-    var m;
-    m = line.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
-    if (m) { result.date = m[3]+'-'+m[1].padStart(2,'0')+'-'+m[2].padStart(2,'0'); break; }
-    m = line.match(/(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/);
-    if (m) { result.date = m[1]+'-'+m[2].padStart(2,'0')+'-'+m[3].padStart(2,'0'); break; }
-    m = line.match(/(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+(\d{1,2}),?\s+(\d{4})/i);
-    if (m) { result.date = m[3]+'-'+(months[m[1].slice(0,3).toLowerCase()]||'01')+'-'+m[2].padStart(2,'0'); break; }
+  // ── DATE: MM/DD/YY, MM/DD/YYYY, YYYY-MM-DD, Month DD YYYY
+  var mos = {jan:'01',feb:'02',mar:'03',apr:'04',may:'05',jun:'06',jul:'07',aug:'08',sep:'09',oct:'10',nov:'11',dec:'12'};
+  for (var di=0; di<lines.length; di++) {
+    var dl = lines[di], dm;
+    dm = dl.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
+    if (dm) { result.date = dm[3]+'-'+dm[1].padStart(2,'0')+'-'+dm[2].padStart(2,'0'); break; }
+    dm = dl.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2})(?!\d)/);
+    if (dm) { var yr=parseInt(dm[3]); result.date=(yr<=50?'20':'19')+(yr<10?'0'+yr:''+yr)+'-'+dm[1].padStart(2,'0')+'-'+dm[2].padStart(2,'0'); break; }
+    dm = dl.match(/(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/);
+    if (dm) { result.date = dm[1]+'-'+dm[2].padStart(2,'0')+'-'+dm[3].padStart(2,'0'); break; }
+    dm = dl.match(/(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+(\d{1,2}),?\s+(\d{4})/i);
+    if (dm) { result.date = dm[3]+'-'+(mos[dm[1].slice(0,3).toLowerCase()]||'01')+'-'+dm[2].padStart(2,'0'); break; }
   }
 
   return result;
@@ -450,6 +449,8 @@ function scanReceipt(b64url) {
   // Step 1: Ask Gemini to read ALL text from the receipt (pure OCR task)
   // Then we do the data extraction ourselves with our pattern matching
   if (!KEY) {
+    // No key — just return today's date so that field is pre-filled
+    // User sets key once in More > Settings
     return Promise.resolve({ vendor:'', amount:0, date:today(), category:'' });
   }
 
@@ -1383,10 +1384,51 @@ function openSettings() {
     a.href=url; a.download='FanGuys-backup-'+today()+'.json'; a.click();
     setTimeout(function(){URL.revokeObjectURL(url);},2000);
   }, '#00AEEF', false));
+  dataGrp.appendChild(settingBtn('Import / Restore Data (JSON)', function(){
+    var input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'application/json,.json';
+    input.style.display = 'none';
+    document.body.appendChild(input);
+    function cleanup(){ if(input.parentNode) input.parentNode.removeChild(input); }
+    input.addEventListener('change', function(){
+      var file = input.files && input.files[0];
+      if(!file){ cleanup(); return; }
+      var reader = new FileReader();
+      reader.onload = function(ev){
+        var data;
+        try { data = JSON.parse(ev.target.result); }
+        catch(e){ alert('That file is not a valid backup. Pick the FanGuys-backup-….json file you exported.'); cleanup(); return; }
+        if(!data || (!Array.isArray(data.jobs) && !Array.isArray(data.receipts))){
+          alert('That file does not look like an Invoice Pro backup.'); cleanup(); return;
+        }
+        var db = dbGet();
+        var inJobs = Array.isArray(data.jobs) ? data.jobs : [];
+        var inRec  = Array.isArray(data.receipts) ? data.receipts : [];
+        var jAdded=0, jUpd=0, rAdded=0, rUpd=0;
+        inJobs.forEach(function(j){
+          if(!j || !j.id) return;
+          var i = db.jobs.findIndex(function(x){return x.id===j.id;});
+          if(i>=0){ db.jobs[i]=j; jUpd++; } else { db.jobs.push(j); jAdded++; }
+        });
+        inRec.forEach(function(r){
+          if(!r || !r.id) return;
+          var i = db.receipts.findIndex(function(x){return x.id===r.id;});
+          if(i>=0){ db.receipts[i]=r; rUpd++; } else { db.receipts.push(r); rAdded++; }
+        });
+        dbSave(db);
+        cleanup(); close(); renderJobList();
+        alert('Restore complete.\n\nReports: '+jAdded+' added, '+jUpd+' updated.\nReceipts: '+rAdded+' added, '+rUpd+' updated.\n\nNothing was deleted.');
+      };
+      reader.onerror = function(){ alert('Could not read that file.'); cleanup(); };
+      reader.readAsText(file);
+    });
+    input.click();
+  }, '#30d158', false));
   dataGrp.appendChild(settingBtn('Reset All Data', function(){
     if (!window.confirm('DELETE all jobs and receipts? This cannot be undone.')) return;
     if (!window.confirm('Are you sure? All data will be permanently deleted.')) return;
-    dbSet({jobs:[],receipts:[]});
+    dbSave({jobs:[],receipts:[]});
     close();
     renderJobList();
   }, '#ff453a', true));
@@ -1535,7 +1577,7 @@ function openReceiptSheet(jobId, initial, onSave) {
             imgEl2.style.cssText='width:100%;height:100%;object-fit:cover;position:absolute;inset:0';
             photoZone.appendChild(imgEl2);
             form.image=prepped;
-            setScan('scan','Reading receipt with AI...');
+            setScan('scan','Reading receipt...');
             scanReceipt(prepped).then(function(res){
               var n=0;
               if(res.vendor&&res.vendor.trim()){ form.vendor=res.vendor.trim(); vendorInp.value=form.vendor; vendorInp.style.color='#fff'; n++; }
@@ -1543,12 +1585,17 @@ function openReceiptSheet(jobId, initial, onSave) {
               if(res.date&&/^\d{4}-\d{2}-\d{2}$/.test(res.date)){ form.date=res.date; dateInp.value=form.date; n++; }
               if(res.category&&res.category.trim()){ form.category=res.category.trim(); catSel.value=form.category; n++; }
               if(n===0){ form.date=today(); dateInp.value=form.date; }
-              setScan('ok',n>0?'Auto-filled '+n+' field'+(n>1?'s':'')+' — check and add any missing':'Photo saved — fill in details below');
+              setScan('ok',n>0?'Auto-filled '+n+' field'+(n>1?'s':'')+' — review below':'Photo saved — fill in Amount and Vendor below');
+              // Auto-focus first empty important field
+              setTimeout(function(){
+                if(!form.amount||parseFloat(form.amount)===0){ amtInp.focus(); }
+                else if(!form.vendor){ vendorInp.focus(); }
+              }, 400);
               setTimeout(function(){setScan('idle','');},5000);
             }).catch(function(err){
               console.error(err);
               form.date=today(); dateInp.value=form.date;
-              setScan('ok','Photo saved — fill in details below');
+              setScan('ok','Photo saved — fill in Amount and Vendor below');
               setTimeout(function(){setScan('idle','');},4000);
             });
           });
@@ -1973,6 +2020,107 @@ function downloadBlob(blob, fileName) {
   setTimeout(function(){URL.revokeObjectURL(url);},3000);
 }
 
+/* ═══════════════════════════════════════════════════
+   COPY TO LEDGER PRO
+   Rolls one report's receipts up into the shape Ledger Pro
+   expects (Hotel / Airfare / Rental Car / Fuel / Material),
+   drops it on the clipboard AND a shared mailbox key so
+   Ledger Pro's "Import from Invoice Pro" can pull it in.
+═══════════════════════════════════════════════════ */
+var FG_BRIDGE_KEY = 'fg_bridge_inv2led';
+
+function copyJobToLedger(job, receipts) {
+  receipts = receipts || [];
+  if (!receipts.length) { alert('This report has no receipts yet, so there is nothing to send to Ledger Pro.'); return; }
+
+  function f(n){ return (Math.round(n*100)/100).toFixed(2); }
+
+  // Per-category totals (for the breakdown note)
+  var byCat = {};
+  var total = 0;
+  receipts.forEach(function(r){
+    var amt = +r.amount || 0;
+    var c = r.category || 'Other';
+    byCat[c] = (byCat[c]||0) + amt;
+    total += amt;
+  });
+  function cat(name){ return byCat[name] || 0; }
+
+  // The four buckets Ledger maps to cleanly
+  var hotel  = cat('Lodging / Hotel');
+  var air    = cat('Airfare');
+  var rental = cat('Vehicle / Rental');
+  var fuel   = cat('Fuel & Gas');
+  // Everything else (Parts, Materials, Tools, Meals, Parking, Labor, Shipping, Other)
+  // goes into Material so every dollar carries over and the books stay balanced.
+  var material = total - hotel - air - rental - fuel;
+  if (material < 0) material = 0;
+
+  // Earliest receipt date drives which year Ledger files it under; fall back to start date
+  var dates = receipts.map(function(r){return r.date;}).filter(Boolean).sort();
+  var jobDate = dates[0] || job.startDate || '';
+
+  // Split the report name into a job number + customer.
+  // e.g. "2026-21 United Cleveland" -> jobNo "2026-21", customer "United Cleveland".
+  // If it doesn't start with a number, send no number and use the whole name as customer.
+  var rawName = (job.name || '').trim();
+  var nameMatch = rawName.match(/^([0-9][0-9\-\/.]*[0-9]|[0-9]+)\s+(.+)$/);
+  var jobNo = nameMatch ? nameMatch[1] : '';
+  var custName = nameMatch ? nameMatch[2].trim() : rawName;
+
+  // Build a plain-English breakdown so nothing is hidden inside "Material"
+  var brk = [];
+  Object.keys(byCat).sort().forEach(function(c){ if(byCat[c]>0) brk.push(c+' $'+f(byCat[c])); });
+  var noteParts = [];
+  if (job.notes && job.notes.trim()) noteParts.push(job.notes.trim());
+  if (brk.length) noteParts.push('From Invoice Pro \u2014 ' + brk.join(', '));
+  var notes = noteParts.join('  |  ');
+
+  var payload = {
+    _fanguys_bridge: 'invoice->ledger',
+    v: 1,
+    exportedAt: new Date().toISOString(),
+    jobs: [{
+      srcId: job.id,
+      jobNo: jobNo,                 // Ledger uses this as the job number
+      customer: custName,           // Ledger brings this in as the customer
+      customCustomer: '',
+      location: job.location || '',
+      jobDate: jobDate,
+      jobType: '', installSubtype: '', fanCount: '',
+      invoiceAmount: '',            // you fill this in Ledger from your billing
+      labor: '',                    // you fill billed labor in Ledger
+      totalExpenses: total ? f(total) : '',
+      expenses: {
+        Hotel:        hotel    ? f(hotel)    : '',
+        Airfare:      air      ? f(air)      : '',
+        'Rental Car': rental   ? f(rental)   : '',
+        Fuel:         fuel     ? f(fuel)     : '',
+        Material:     material ? f(material) : ''
+      },
+      notes: notes
+    }]
+  };
+
+  var code = JSON.stringify(payload);
+
+  // 1) Shared mailbox — used automatically if both apps can see the same storage
+  try { localStorage.setItem(FG_BRIDGE_KEY, code); } catch(e) {}
+
+  // 2) Clipboard — the reliable path between two separate home-screen apps
+  var msg = 'Copied "' + (job.name || 'this report') + '" for Ledger Pro.\n\n' +
+            'Total expenses: $' + f(total) + '\n\n' +
+            'Now open Ledger Pro \u2192 Tools \u2192 Import from Invoice Pro. ' +
+            'If it asks, just paste \u2014 the code is already on your clipboard.';
+
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(code).then(function(){ alert(msg); })
+      .catch(function(){ window.prompt('Press and hold to Select All \u2192 Copy, then paste into Ledger Pro \u2192 Tools \u2192 Import from Invoice Pro:', code); });
+  } else {
+    window.prompt('Press and hold to Select All \u2192 Copy, then paste into Ledger Pro \u2192 Tools \u2192 Import from Invoice Pro:', code);
+  }
+}
+
 function openJobMenu(e, job, receipts, onDelete) {
   e.stopPropagation();
   // Remove any existing open menus
@@ -1998,6 +2146,9 @@ function openJobMenu(e, job, receipts, onDelete) {
   }));
   menu.appendChild(menuItem('📤', 'Share / Google Drive', function(){
     shareJobReport(job, receipts);
+  }));
+  menu.appendChild(menuItem('📒', 'Copy to Ledger Pro', function(){
+    copyJobToLedger(job, receipts);
   }));
   menu.appendChild(menuItem('🗑', 'Delete Report', onDelete, true));
 
@@ -2070,7 +2221,7 @@ function renderJobList() {
       var recs=db.receipts.filter(function(r){return r.jobId===job.id;});
       var tot=recs.reduce(function(s,r){return s+r.amount;},0);
       var dates=recs.map(function(r){return r.date;}).sort();
-      var dr=dates.length?fmtD(dates[0])+' to '+fmtD(dates[dates.length-1]):(job.startDate?fmtD(job.startDate)+(job.endDate?' to '+fmtD(job.endDate):''):null);
+      var dr=dates.length?fmtD(dates[0])+' → '+fmtD(dates[dates.length-1]):(job.startDate?fmtD(job.startDate)+(job.endDate?' → '+fmtD(job.endDate):''):null);
 
       var card=div({className:'job-card'});
       var left=div({className:'flex1',style:{paddingRight:'12px'}});
