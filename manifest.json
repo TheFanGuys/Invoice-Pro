@@ -1,7 +1,7 @@
 {
-  "name": "Fan Guys Receipt Tracker",
-  "short_name": "FG Receipts",
-  "description": "Field receipt tracker for Fan Guys HVLS installs",
+  "name": "Invoice Pro",
+  "short_name": "Invoice Pro",
+  "description": "Fan Guys field receipt and expense tracker",
   "start_url": ".",
   "display": "standalone",
   "background_color": "#000000",
