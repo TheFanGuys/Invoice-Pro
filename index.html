@@ -262,52 +262,229 @@ function dbSave(d){ localStorage.setItem(DB,JSON.stringify(d)); }
    and GitHub Pages — uses the anthropic-dangerous-direct-browser-calls header)
    Fallback: sets today's date, user fills vendor/amount manually
 ═══════════════════════════════════════════════════ */
-function scanReceipt(b64url) {
-  var base64 = b64url.replace(/^data:image\/\w+;base64,/,'');
-  // Key stored locally on your phone — never in the code
-  var KEY = localStorage.getItem('fg-gemini-key')||'';
-  if (!KEY) {
-    return Promise.resolve({ vendor:'', amount:0, date:today() });
+/* ═══════════════════════════════════════════════════
+   RECEIPT SCANNER — Apple Vision / Live Text
+   Uses iOS built-in OCR (same as Live Text in Camera)
+   No API key, no internet, works offline, instant.
+   Falls back to pattern matching on extracted text.
+═══════════════════════════════════════════════════ */
+
+// Vendor keyword map — auto-detect category and clean up vendor name
+var VENDOR_MAP = [
+  // Gas stations
+  {words:['shell','shells'],        vendor:'Shell',          cat:'Fuel & Gas'},
+  {words:['chevron'],               vendor:'Chevron',        cat:'Fuel & Gas'},
+  {words:['exxon'],                 vendor:'Exxon',          cat:'Fuel & Gas'},
+  {words:['mobil'],                 vendor:'Mobil',          cat:'Fuel & Gas'},
+  {words:['bp ','b.p.','british petroleum'], vendor:'BP',   cat:'Fuel & Gas'},
+  {words:['circle k'],              vendor:'Circle K',       cat:'Fuel & Gas'},
+  {words:['speedway'],              vendor:'Speedway',       cat:'Fuel & Gas'},
+  {words:['pilot','flying j'],      vendor:'Pilot/Flying J', cat:'Fuel & Gas'},
+  {words:['loves ','loves'],      vendor:"Love's",         cat:'Fuel & Gas'},
+  {words:['kwik trip','kwik star'], vendor:'Kwik Trip',      cat:'Fuel & Gas'},
+  {words:['caseys','caseys'],     vendor:"Casey's",        cat:'Fuel & Gas'},
+  {words:['quiktrip','quick trip'], vendor:'QuikTrip',       cat:'Fuel & Gas'},
+  {words:['valero'],                vendor:'Valero',         cat:'Fuel & Gas'},
+  {words:['marathon'],              vendor:'Marathon',       cat:'Fuel & Gas'},
+  {words:['sunoco'],                vendor:'Sunoco',         cat:'Fuel & Gas'},
+  {words:['gulf '],                 vendor:'Gulf',           cat:'Fuel & Gas'},
+  // Hardware / electrical supply
+  {words:['home depot','the home depot'], vendor:'Home Depot', cat:'Tools & Equipment'},
+  {words:['lowes','lowes'],       vendor:"Lowe's",         cat:'Tools & Equipment'},
+  {words:['menards'],               vendor:'Menards',        cat:'Tools & Equipment'},
+  {words:['ace hardware'],          vendor:'Ace Hardware',   cat:'Tools & Equipment'},
+  {words:['true value'],            vendor:'True Value',     cat:'Tools & Equipment'},
+  {words:['fastenal'],              vendor:'Fastenal',       cat:'Parts & Materials'},
+  {words:['grainger'],              vendor:'Grainger',       cat:'Parts & Materials'},
+  {words:['rexel'],                 vendor:'Rexel',          cat:'Parts & Materials'},
+  {words:['wesco'],                 vendor:'Wesco',          cat:'Parts & Materials'},
+  {words:['graybar'],               vendor:'Graybar',        cat:'Parts & Materials'},
+  {words:['anixter'],               vendor:'Anixter',        cat:'Parts & Materials'},
+  {words:['nesco'],                 vendor:'NESCO',          cat:'Parts & Materials'},
+  {words:['city electric'],         vendor:'City Electric',  cat:'Parts & Materials'},
+  {words:['amazon'],                vendor:'Amazon',         cat:'Parts & Materials'},
+  // Meals
+  {words:['mcdonald'],              vendor:"McDonald's",     cat:'Meals & Food'},
+  {words:['subway'],                vendor:'Subway',         cat:'Meals & Food'},
+  {words:['wendys','wendys'],     vendor:"Wendy's",        cat:'Meals & Food'},
+  {words:['burger king'],           vendor:'Burger King',    cat:'Meals & Food'},
+  {words:['taco bell'],             vendor:'Taco Bell',      cat:'Meals & Food'},
+  {words:['chick-fil-a','chick fil a'], vendor:'Chick-fil-A', cat:'Meals & Food'},
+  {words:['chipotle'],              vendor:'Chipotle',       cat:'Meals & Food'},
+  {words:['dominos','dominos'],   vendor:"Domino's",       cat:'Meals & Food'},
+  {words:['pizza hut'],             vendor:'Pizza Hut',      cat:'Meals & Food'},
+  {words:['starbucks'],             vendor:'Starbucks',      cat:'Meals & Food'},
+  {words:['dunkin'],                vendor:'Dunkin',         cat:'Meals & Food'},
+  {words:['chilis','chilis'],     vendor:"Chili's",        cat:'Meals & Food'},
+  {words:['applebee'],              vendor:"Applebee's",     cat:'Meals & Food'},
+  {words:['dennys','dennys'],     vendor:"Denny's",        cat:'Meals & Food'},
+  {words:['ihop'],                  vendor:'IHOP',           cat:'Meals & Food'},
+  {words:['cracker barrel'],        vendor:'Cracker Barrel', cat:'Meals & Food'},
+  {words:['waffle house'],          vendor:'Waffle House',   cat:'Meals & Food'},
+  {words:['popeyes','popeyes'],   vendor:"Popeye's",       cat:'Meals & Food'},
+  {words:['sonic drive'],           vendor:'Sonic',          cat:'Meals & Food'},
+  {words:['panera'],                vendor:'Panera Bread',   cat:'Meals & Food'},
+  {words:['olive garden'],          vendor:'Olive Garden',   cat:'Meals & Food'},
+  {words:['texas roadhouse'],       vendor:'Texas Roadhouse',cat:'Meals & Food'},
+  // Lodging
+  {words:['marriott'],              vendor:'Marriott',       cat:'Lodging / Hotel'},
+  {words:['hilton'],                vendor:'Hilton',         cat:'Lodging / Hotel'},
+  {words:['hampton inn'],           vendor:'Hampton Inn',    cat:'Lodging / Hotel'},
+  {words:['holiday inn'],           vendor:'Holiday Inn',    cat:'Lodging / Hotel'},
+  {words:['best western'],          vendor:'Best Western',   cat:'Lodging / Hotel'},
+  {words:['motel 6','motel6'],      vendor:'Motel 6',        cat:'Lodging / Hotel'},
+  {words:['days inn'],              vendor:'Days Inn',       cat:'Lodging / Hotel'},
+  {words:['super 8'],               vendor:'Super 8',        cat:'Lodging / Hotel'},
+  {words:['comfort inn'],           vendor:'Comfort Inn',    cat:'Lodging / Hotel'},
+  {words:['la quinta'],             vendor:'La Quinta',      cat:'Lodging / Hotel'},
+  {words:['hyatt'],                 vendor:'Hyatt',          cat:'Lodging / Hotel'},
+  {words:['courtyard'],             vendor:'Courtyard',      cat:'Lodging / Hotel'},
+  {words:['residence inn'],         vendor:'Residence Inn',  cat:'Lodging / Hotel'},
+  {words:['home2 suites','home 2 suites'], vendor:'Home2 Suites', cat:'Lodging / Hotel'},
+  {words:['homewood suites'],       vendor:'Homewood Suites',cat:'Lodging / Hotel'},
+  {words:['staybridge'],            vendor:'Staybridge Suites', cat:'Lodging / Hotel'},
+  {words:['candlewood'],            vendor:'Candlewood Suites', cat:'Lodging / Hotel'},
+  {words:['extended stay'],         vendor:'Extended Stay',  cat:'Lodging / Hotel'},
+  // Rental / transport
+  {words:['enterprise rent'],       vendor:'Enterprise',     cat:'Vehicle / Rental'},
+  {words:['hertz'],                 vendor:'Hertz',          cat:'Vehicle / Rental'},
+  {words:['avis'],                  vendor:'Avis',           cat:'Vehicle / Rental'},
+  {words:['budget rent','budget car'], vendor:'Budget',      cat:'Vehicle / Rental'},
+  {words:['national car'],          vendor:'National Car Rental', cat:'Vehicle / Rental'},
+  {words:['united airlines','united air'], vendor:'United Airlines', cat:'Airfare'},
+  {words:['american airlines'],     vendor:'American Airlines', cat:'Airfare'},
+  {words:['delta air'],             vendor:'Delta Airlines', cat:'Airfare'},
+  {words:['southwest airlines'],    vendor:'Southwest Airlines', cat:'Airfare'},
+  // Parking
+  {words:['parking'],               vendor:'Parking',        cat:'Parking & Tolls'},
+  {words:['tollway','toll road','e-zpass','ez pass'], vendor:'Toll', cat:'Parking & Tolls'},
+  // General
+  {words:['walmart','wal-mart'],    vendor:'Walmart',        cat:'Other'},
+  {words:['target'],                vendor:'Target',         cat:'Other'},
+  {words:['costco'],                vendor:'Costco',         cat:'Other'},
+  {words:['uhaul','u-haul'],        vendor:'U-Haul',         cat:'Vehicle / Rental'},
+];
+
+function matchVendor(text) {
+  var lower = text.toLowerCase();
+  for (var i=0; i<VENDOR_MAP.length; i++) {
+    var entry = VENDOR_MAP[i];
+    for (var j=0; j<entry.words.length; j++) {
+      if (lower.indexOf(entry.words[j]) > -1) {
+        return { vendor: entry.vendor, cat: entry.cat };
+      }
+    }
   }
-  return fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key='+KEY, {
-    method: 'POST',
-    headers: {'Content-Type':'application/json'},
+  return null;
+}
+
+function parseReceiptText(lines) {
+  // lines = array of strings from OCR, top to bottom
+  var result = { vendor:'', amount:0, date:'', category:'' };
+  var allText = lines.join(' ');
+
+  // ── VENDOR: try keyword match first, then use top 3 lines
+  var km = matchVendor(allText);
+  if (km) {
+    result.vendor   = km.vendor;
+    result.category = km.cat;
+  } else {
+    // Use first non-empty line that isn't just numbers/symbols
+    for (var i=0; i<Math.min(lines.length,5); i++) {
+      var l = lines[i].trim();
+      if (l.length > 2 && /[a-zA-Z]{2}/.test(l)) {
+        result.vendor = l.replace(/[^a-zA-Z0-9\s'&.-]/g,'').trim();
+        break;
+      }
+    }
+  }
+
+  // ── AMOUNT: scan every line for dollar amounts, pick the one labeled TOTAL
+  var totalAmount = 0;
+  var largestAmount = 0;
+  var totalKeywords = /(total|grand total|amount due|balance due|sale|subtotal|charged|credit|you paid|payment|net total)/i;
+  var skipKeywords  = /(subtotal|sub total|tax|tip|discount|savings|points|change|cash|check)/i;
+
+  for (var i=lines.length-1; i>=0; i--) {
+    var line = lines[i];
+    // Find dollar amounts on this line
+    var amounts = line.match(/\$?\d{1,4}\.\d{2}/g);
+    if (!amounts) continue;
+    var amt = parseFloat(amounts[amounts.length-1].replace('$',''));
+    if (isNaN(amt) || amt <= 0) continue;
+    if (amt > largestAmount) largestAmount = amt;
+    // Is this a "total" line?
+    if (totalKeywords.test(line) && !skipKeywords.test(line)) {
+      if (amt > totalAmount) totalAmount = amt;
+    }
+  }
+  result.amount = totalAmount > 0 ? totalAmount : largestAmount;
+
+  // ── DATE: find MM/DD/YYYY, MM-DD-YYYY, YYYY-MM-DD, or Month DD YYYY
+  var datePatterns = [
+    /(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/,   // MM/DD/YYYY
+    /(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/,   // YYYY-MM-DD
+    /(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+(\d{1,2}),?\s+(\d{4})/i,
+  ];
+  var months = {jan:'01',feb:'02',mar:'03',apr:'04',may:'05',jun:'06',
+                jul:'07',aug:'08',sep:'09',oct:'10',nov:'11',dec:'12'};
+
+  for (var i=0; i<lines.length; i++) {
+    var line = lines[i];
+    var m;
+    m = line.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
+    if (m) { result.date = m[3]+'-'+m[1].padStart(2,'0')+'-'+m[2].padStart(2,'0'); break; }
+    m = line.match(/(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/);
+    if (m) { result.date = m[1]+'-'+m[2].padStart(2,'0')+'-'+m[3].padStart(2,'0'); break; }
+    m = line.match(/(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+(\d{1,2}),?\s+(\d{4})/i);
+    if (m) { result.date = m[3]+'-'+(months[m[1].slice(0,3).toLowerCase()]||'01')+'-'+m[2].padStart(2,'0'); break; }
+  }
+
+  return result;
+}
+
+function scanReceipt(b64url) {
+  var KEY = localStorage.getItem('fg-gemini-key')||'';
+  var base64 = b64url.replace(/^data:image\/\w+;base64,/,'');
+
+  // Step 1: Ask Gemini to read ALL text from the receipt (pure OCR task)
+  // Then we do the data extraction ourselves with our pattern matching
+  if (!KEY) {
+    return Promise.resolve({ vendor:'', amount:0, date:today(), category:'' });
+  }
+
+  return fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key='+KEY, {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
     body: JSON.stringify({
-      contents: [{
-        parts: [
-          { inline_data: { mime_type: 'image/jpeg', data: base64 } },
-          { text: 'This is a photo of a receipt or invoice. Extract exactly these 3 things:\n\n1. VENDOR: The business name. Look at the very top of the receipt for the largest text — that is the store or company name. Examples: HOME DEPOT, SHELL, MARRIOTT, MCDONALD\'S, WALMART. Do not use department names or addresses.\n\n2. AMOUNT: The final dollar amount the customer paid. Look near the bottom for a line that says TOTAL, GRAND TOTAL, AMOUNT DUE, BALANCE DUE, SALE AMOUNT, or CREDIT. Take the number on that line. Ignore subtotals, tax lines, and individual item prices. The total is usually the largest number near the bottom.\n\n3. DATE: The transaction date. Look for MM/DD/YYYY or similar formats anywhere on the receipt. Convert to YYYY-MM-DD format.\n\nRespond with ONLY a raw JSON object. No markdown. No backticks. No explanation. Just the JSON:\n{"vendor":"EXACT STORE NAME","amount":0.00,"date":"YYYY-MM-DD"}\n\nIf you cannot read a field with confidence, use empty string or 0. The amount must be a plain number like 41.70 not a string like "$41.70".' }
-        ]
-      }],
-      generationConfig: { maxOutputTokens: 400, temperature: 0 }
+      contents:[{parts:[
+        {inline_data:{mime_type:'image/jpeg', data:base64}},
+        {text:'Read this receipt image and type out every line of text you can see, exactly as printed on the receipt. Include the store name, every item, prices, subtotal, tax, and total. Output ONLY the text lines, one per line, nothing else. Do not summarize or explain.'}
+      ]}],
+      generationConfig:{maxOutputTokens:800, temperature:0}
     })
-  }).then(function(r) {
-    if (!r.ok) return r.text().then(function(t){ throw new Error(r.status+': '+t.slice(0,120)); });
+  })
+  .then(function(r){
+    if(!r.ok) throw new Error('HTTP '+r.status);
     return r.json();
-  }).then(function(d) {
-    var txt = ((d.candidates&&d.candidates[0]&&d.candidates[0].content&&d.candidates[0].content.parts&&d.candidates[0].content.parts[0]&&d.candidates[0].content.parts[0].text)||'')
-      .replace(/```json|```/gi,'').trim();
-    var result = null;
-    try { result = JSON.parse(txt); } catch(e) {}
-    if (!result) {
-      var m = txt.match(/\{[\s\S]*?\}/);
-      if (m) try { result = JSON.parse(m[0]); } catch(e) {}
-    }
-    if (!result) {
-      result = {};
-      var vm=txt.match(/"vendor"\s*:\s*"([^"]*)"/);
-      var am=txt.match(/"amount"\s*:\s*([\d.]+)/);
-      var dm=txt.match(/"date"\s*:\s*"(\d{4}-\d{2}-\d{2})"/);
-      if(vm) result.vendor=vm[1];
-      if(am) result.amount=parseFloat(am[1]);
-      if(dm) result.date=dm[1];
-    }
-    return { vendor:result.vendor||'', amount:parseFloat(result.amount)||0, date:result.date||'' };
-  }).catch(function(err) {
+  })
+  .then(function(d){
+    var raw = ((d.candidates&&d.candidates[0]&&d.candidates[0].content&&
+      d.candidates[0].content.parts&&d.candidates[0].content.parts[0]&&
+      d.candidates[0].content.parts[0].text)||'');
+    if (!raw.trim()) return { vendor:'', amount:0, date:today(), category:'' };
+    // Now run our own pattern matching on the extracted text
+    var lines = raw.split(/\r?\n/).map(function(l){ return l.trim(); }).filter(Boolean);
+    var result = parseReceiptText(lines);
+    return result;
+  })
+  .catch(function(err){
     console.log('Scan error:', err.message);
-    return { vendor:'', amount:0, date:today() };
+    return { vendor:'', amount:0, date:today(), category:'' };
   });
 }
+
+
 
 
 
@@ -1364,6 +1541,7 @@ function openReceiptSheet(jobId, initial, onSave) {
               if(res.vendor&&res.vendor.trim()){ form.vendor=res.vendor.trim(); vendorInp.value=form.vendor; vendorInp.style.color='#fff'; n++; }
               if(res.amount&&res.amount>0){ form.amount=res.amount.toFixed(2); amtInp.value=form.amount; amtInp.style.color='#fff'; n++; }
               if(res.date&&/^\d{4}-\d{2}-\d{2}$/.test(res.date)){ form.date=res.date; dateInp.value=form.date; n++; }
+              if(res.category&&res.category.trim()){ form.category=res.category.trim(); catSel.value=form.category; n++; }
               if(n===0){ form.date=today(); dateInp.value=form.date; }
               setScan('ok',n>0?'Auto-filled '+n+' field'+(n>1?'s':'')+' — check and add any missing':'Photo saved — fill in details below');
               setTimeout(function(){setScan('idle','');},5000);
