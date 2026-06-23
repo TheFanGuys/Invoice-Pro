@@ -1668,23 +1668,31 @@ function openReceiptSheet(jobId, initial, onSave) {
 /* ═══════════════════════════════════════════════════
    JOB FORM SHEET
 ═══════════════════════════════════════════════════ */
-function openJobSheet(onSave) {
-  var data = {name:'', location:'', startDate:today(), endDate:'', notes:''};
+function openJobSheet(onSave, existing) {
+  var isEdit = !!existing;
+  var data = {
+    name:      isEdit ? (existing.name||'')      : '',
+    location:  isEdit ? (existing.location||'')  : '',
+    startDate: isEdit ? (existing.startDate||'') : today(),
+    endDate:   isEdit ? (existing.endDate||'')   : '',
+    notes:     isEdit ? (existing.notes||'')     : ''
+  };
+  var DIM = 'rgba(255,255,255,.22)';
 
   function submit() {
     if (!data.name.trim()) { alert('Enter a job name.'); return; }
     if (data.location && data.location.trim()) saveCityEntry(data.location.trim());
     overlay.remove();
-    onSave({id:uid(), name:data.name.trim(), location:data.location,
+    onSave({id: isEdit ? existing.id : uid(), name:data.name.trim(), location:data.location,
       startDate:data.startDate, endDate:data.endDate, notes:data.notes});
   }
 
-  var overlay = makeSheet('New Report', function(){overlay.remove();}, submit, 'Create', function(body){
+  var overlay = makeSheet(isEdit?'Edit Report':'New Report', function(){overlay.remove();}, submit, isEdit?'Save':'Create', function(body){
     var nameInp = makeInput('e.g. 2026-20 United Cleveland', data.name, function(v){data.name=v;});
     nameInp.className='field-input';
-    nameInp.style.color=data.name?'#fff':'rgba(255,255,255,.22)';
-    setTimeout(function(){nameInp.focus();},100);
-    nameInp.addEventListener('input',function(){ nameInp.style.color=nameInp.value?'#fff':'rgba(255,255,255,.22)';});
+    nameInp.style.color=data.name?'#fff':DIM;
+    if(!isEdit) setTimeout(function(){nameInp.focus();},100);
+    nameInp.addEventListener('input',function(){ nameInp.style.color=nameInp.value?'#fff':DIM;});
 
     var cityResult = makeCityInput('City, state or customer', data.location, function(v){data.location=v;});
     var locInp = cityResult.input;
@@ -1694,15 +1702,15 @@ function openJobSheet(onSave) {
     startInp.className='field-input';
     startInp.addEventListener('change',function(){data.startDate=startInp.value;});
 
-    var endInp = inp({type:'date', value:''});
+    var endInp = inp({type:'date', value:data.endDate||''});
     endInp.className='field-input';
-    endInp.style.color='rgba(255,255,255,.22)';
-    endInp.addEventListener('change',function(){data.endDate=endInp.value; endInp.style.color=endInp.value?'#fff':'rgba(255,255,255,.22)';});
+    endInp.style.color=data.endDate?'#fff':DIM;
+    endInp.addEventListener('change',function(){data.endDate=endInp.value; endInp.style.color=endInp.value?'#fff':DIM;});
 
     var notesInp = makeInput('PO number, contact info...', data.notes, function(v){data.notes=v;});
     notesInp.className='field-input';
-    notesInp.style.color='rgba(255,255,255,.22)';
-    notesInp.addEventListener('input',function(){notesInp.style.color=notesInp.value?'#fff':'rgba(255,255,255,.22)';});
+    notesInp.style.color=data.notes?'#fff':DIM;
+    notesInp.addEventListener('input',function(){notesInp.style.color=notesInp.value?'#fff':DIM;});
 
     body.appendChild(makeFieldGroup([
       makeFieldRow('Job / Report Name', nameInp, false),
@@ -1870,7 +1878,21 @@ function renderJobDetail(job) {
     var exportBtn=btn({className:'nav-btn',onClick:doExport});
     exportBtn.appendChild(IC.dl(22,'#00AEEF'));
 
-    screen.appendChild(makeNavBar(backBtn, centerNav, exportBtn));
+    var editBtn=btn({className:'nav-btn',onClick:function(){
+      openJobSheet(function(updated){
+        var d=dbGet();
+        d.jobs=d.jobs.map(function(j){ return j.id===updated.id ? Object.assign({}, j, updated) : j; });
+        dbSave(d);
+        // re-open the detail with the fresh job so the title/dates update
+        var fresh=dbGet().jobs.find(function(j){return j.id===updated.id;}) || updated;
+        renderJobDetail(fresh);
+      }, job);
+    }});
+    editBtn.appendChild(document.createTextNode('✏️'));
+    editBtn.style.fontSize='17px';
+
+    var rightWrap=div({style:{display:'flex',alignItems:'center',gap:'2px'}},[editBtn, exportBtn]);
+    screen.appendChild(makeNavBar(backBtn, centerNav, rightWrap));
 
     // Title row
     var titleRow=div({style:{display:'flex',alignItems:'baseline',justifyContent:'space-between',padding:'14px 16px 0'}});
@@ -2121,7 +2143,7 @@ function copyJobToLedger(job, receipts) {
   }
 }
 
-function openJobMenu(e, job, receipts, onDelete) {
+function openJobMenu(e, job, receipts, onEdit, onDelete) {
   e.stopPropagation();
   // Remove any existing open menus
   var existing = document.querySelector('.dot-menu');
@@ -2141,6 +2163,7 @@ function openJobMenu(e, job, receipts, onDelete) {
     return item;
   }
 
+  menu.appendChild(menuItem('✏️', 'Edit Report', onEdit));
   menu.appendChild(menuItem('📄', 'Export PDF', function(){
     buildPDF(job, receipts).catch(function(e){ alert('PDF error: '+e.message); });
   }));
@@ -2239,6 +2262,13 @@ function renderJobList() {
         b.innerHTML='<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.45)" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="5" r="1.2" fill="rgba(255,255,255,0.45)"/><circle cx="12" cy="12" r="1.2" fill="rgba(255,255,255,0.45)"/><circle cx="12" cy="19" r="1.2" fill="rgba(255,255,255,0.45)"/></svg>';
         b.addEventListener('click', function(e){
           openJobMenu(e, capturedJob, capturedRecs, function(){
+            // Edit: open the sheet pre-filled, save changes back onto the same job id
+            openJobSheet(function(updated){
+              db=dbGet();
+              db.jobs=db.jobs.map(function(j){ return j.id===updated.id ? Object.assign({}, j, updated) : j; });
+              dbSave(db); redraw();
+            }, capturedJob);
+          }, function(){
             if(!window.confirm('Delete this job and all its receipts?'))return;
             db=dbGet(); db.jobs=db.jobs.filter(function(j){return j.id!==capturedJob.id;}); db.receipts=db.receipts.filter(function(r){return r.jobId!==capturedJob.id;}); dbSave(db); redraw();
           });
