@@ -2065,15 +2065,20 @@ function copyJobToLedger(job, receipts) {
   });
   function cat(name){ return byCat[name] || 0; }
 
-  // The four buckets Ledger maps to cleanly
+  // The four travel buckets Ledger maps to cleanly
   var hotel  = cat('Lodging / Hotel');
   var air    = cat('Airfare');
   var rental = cat('Vehicle / Rental');
   var fuel   = cat('Fuel & Gas');
-  // Everything else (Parts, Materials, Tools, Meals, Parking, Labor, Shipping, Other)
-  // goes into Material so every dollar carries over and the books stay balanced.
-  var material = total - hotel - air - rental - fuel;
+  // Labor receipts go into Ledger's LABOR field (not into expenses)
+  var labor  = cat('Labor');
+  // Material = everything left over (Parts, Materials, Tools, Meals, Parking, Shipping, Other)
+  var material = total - hotel - air - rental - fuel - labor;
   if (material < 0) material = 0;
+  // Expense subtotal = the five buckets (does NOT include labor)
+  var expensesTotal = hotel + air + rental + fuel + material;
+  // Invoice = labor + all expenses (your rule)
+  var invoiceAmt = labor + expensesTotal;
 
   // Earliest receipt date drives which year Ledger files it under; fall back to start date
   var dates = receipts.map(function(r){return r.date;}).filter(Boolean).sort();
@@ -2107,9 +2112,9 @@ function copyJobToLedger(job, receipts) {
       location: job.location || '',
       jobDate: jobDate,
       jobType: '', installSubtype: '', fanCount: '',
-      invoiceAmount: '',            // you fill this in Ledger from your billing
-      labor: '',                    // you fill billed labor in Ledger
-      totalExpenses: total ? f(total) : '',
+      invoiceAmount: invoiceAmt ? f(invoiceAmt) : '',   // labor + all expenses
+      labor:         labor       ? f(labor)      : '',   // Labor receipts -> Ledger Labor field
+      totalExpenses: expensesTotal ? f(expensesTotal) : '',  // expenses only (no labor)
       expenses: {
         Hotel:        hotel    ? f(hotel)    : '',
         Airfare:      air      ? f(air)      : '',
@@ -2128,15 +2133,15 @@ function copyJobToLedger(job, receipts) {
 
   // 2) Clipboard — the reliable path between two separate home-screen apps
   var msg = 'Copied "' + (job.name || 'this report') + '" for Ledger Pro.\n\n' +
-            'Total expenses: $' + f(total) + '\n\n' +
-            'Now open Ledger Pro \u2192 Tools \u2192 Import from Invoice Pro. ' +
+            'Invoice $' + f(invoiceAmt) + '  =  Labor $' + f(labor) + '  +  Expenses $' + f(expensesTotal) + '\n\n' +
+            'Now open Ledger Pro \u2192 \u2630 menu \u2192 Import from Invoice Pro. ' +
             'If it asks, just paste \u2014 the code is already on your clipboard.';
 
   if (navigator.clipboard && navigator.clipboard.writeText) {
     navigator.clipboard.writeText(code).then(function(){ alert(msg); })
-      .catch(function(){ window.prompt('Press and hold to Select All \u2192 Copy, then paste into Ledger Pro \u2192 Tools \u2192 Import from Invoice Pro:', code); });
+      .catch(function(){ window.prompt('Press and hold to Select All \u2192 Copy, then paste into Ledger Pro \u2192 \u2630 menu \u2192 Import from Invoice Pro:', code); });
   } else {
-    window.prompt('Press and hold to Select All \u2192 Copy, then paste into Ledger Pro \u2192 Tools \u2192 Import from Invoice Pro:', code);
+    window.prompt('Press and hold to Select All \u2192 Copy, then paste into Ledger Pro \u2192 \u2630 menu \u2192 Import from Invoice Pro:', code);
   }
 }
 
