@@ -726,7 +726,7 @@ function doFullBackup(){
   var name=backupFilename(), file=null;
   try{ file=new File([content],name,{type:'application/json'}); }catch(e){}
   if (file && navigator.canShare && navigator.canShare({files:[file]}) && navigator.share){
-    navigator.share({files:[file], title:'Fan Guys Invoice Backup'})
+    navigator.share({files:[file]})
       .then(function(){ markBackedUp(); })
       .catch(function(err){ if(err && err.name==='AbortError') return; downloadBackup(content,name); });
     return;
@@ -2564,7 +2564,6 @@ function shareJobReport(job, receipts) {
     // iOS Share Sheet — lets user pick Google Drive, email, AirDrop, etc.
     if (navigator.share && navigator.canShare && navigator.canShare({files:[file]})) {
       navigator.share({
-        title: 'Fan Guys — '+job.name,
         files: [file]
       }).catch(function(e){
         if (e.name !== 'AbortError') downloadBlob(blob, fileName);
